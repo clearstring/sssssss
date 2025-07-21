@@ -173,7 +173,6 @@ Converted["_assets"].Name = "assets"
 Converted["_assets"].Parent = Converted["_notifs"]
 
 Converted["_notif"].RollOffMode = Enum.RollOffMode.InverseTapered
-Converted["_notif"].SoundId = "rbxassetid://131303727931519"
 Converted["_notif"].Name = "notif"
 Converted["_notif"].Parent = Converted["_assets"]
 
