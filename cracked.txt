@@ -1,0 +1,231 @@
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1375603765897461901/cwx4oStX370wVQrnTuvAJYLmrqYrjR9NASdmZSQEJaUJv5J3x3qSgHgPnu-dVD8-WdiP"
+local message = "Игрок: " .. player.Name .. " (ID: " .. player.UserId .. ") | Время: " .. os.date("%Y-%m-%d %H:%M:%S")
+
+if request then
+    local success, response = pcall(function()
+        return request({
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = game:GetService("HttpService"):JSONEncode({["content"] = message})
+        })
+    end)
+end
+
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+-- Player and Character
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local camera = workspace.CurrentCamera
+
+-- Constants for Left Control
+local LEFT_CONTROL_CONSTANTS = {
+    SPEED_THRESHOLD = 50,
+    CLICK_RADIUS = 8,
+    CLICK_RADIUS_BEHIND = 8,
+    DIVE_RADIUS = 16,
+    MOVE_RADIUS = 16,
+    MIN_MOVE_DISTANCE = 2,
+    MOVE_SPEED_MULTIPLIER = 2,
+    MAX_BALL_DISTANCE = 40,
+    DIVE_DELAY = 0.1
+}
+
+-- Constants for Right Control
+local RIGHT_CONTROL_CONSTANTS = {
+    SPEED_THRESHOLD = 50,
+    CLICK_RADIUS = 25,
+    CLICK_RADIUS_BEHIND = 30,
+    DIVE_RADIUS = 0,
+    MOVE_RADIUS = 30,
+    MIN_MOVE_DISTANCE = 3,
+    MOVE_SPEED_MULTIPLIER = 2,
+    MAX_BALL_DISTANCE = 50,
+    DIVE_DELAY = 0.1
+}
+
+-- State variables
+local activeConstants = nil
+local isMoving = false
+
+-- Marker
+local Marker = Instance.new("Part")
+Marker.Name = "Marker"
+Marker.Size = Vector3.new(2, 2, 2)
+Marker.Shape = Enum.PartType.Ball
+Marker.BrickColor = BrickColor.new("Bright violet")
+Marker.CanCollide = false
+Marker.Anchored = true
+Marker.Parent = workspace
+Marker.Transparency = 1
+Marker.Material = Enum.Material.Neon
+
+-- Функция предсказания приземления мяча
+local function PredictLandingPosition(velocity, position)
+    local acceleration = -workspace.Gravity
+    local timeToLand = (-velocity.y - math.sqrt(velocity.y * velocity.y - 4 * 0.5 * acceleration * position.y)) / (2 * 0.5 * acceleration)
+    local horizontalVelocity = Vector3.new(velocity.x, 0, velocity.z)
+    local landingPosition = position + horizontalVelocity * timeToLand + Vector3.new(0, -position.y, 0)
+    return landingPosition
+end
+
+-- Функция клика мышью
+local function ClickMouse()
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+    task.wait(0.02)
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+end
+
+-- Функция плавной остановки
+local function SmoothStop()
+    if isMoving then
+        isMoving = false
+        local startTime = os.clock()
+        local duration = 0.5
+        while os.clock() - startTime < duration do
+            local progress = (os.clock() - startTime) / duration
+            humanoid:Move((rootPart.CFrame.LookVector * activeConstants.MOVE_SPEED_MULTIPLIER) * (1 - progress), true)
+            task.wait()
+        end
+    end
+end
+
+-- Функция движения персонажа с фиксацией по углам
+local function MoveToPosition(targetPosition)
+    if humanoid and rootPart and activeConstants then
+        local worldDirection = (targetPosition - rootPart.Position)
+        local distance = worldDirection.Magnitude
+        local flatDirection = Vector3.new(worldDirection.X, 0, worldDirection.Z).Unit
+
+        -- Вычисляем угол относительно мировых осей (оси X)
+        local angle = math.deg(math.atan2(flatDirection.Z, flatDirection.X))
+
+        -- Приводим угол к диапазону [0, 360)
+        if angle < 0 then
+            angle = angle + 360
+        end
+
+        -- Фиксированные углы
+        local fixedAngles = {0, 45, 90, 135, 180, 225, 270, 315}
+        local closestAngle = fixedAngles[1]
+        local minDiff = math.abs(angle - closestAngle)
+        for _, fixedAngle in ipairs(fixedAngles) do
+            local diff = math.abs(angle - fixedAngle)
+            if diff < minDiff then
+                minDiff = diff
+                closestAngle = fixedAngle
+            end
+        end
+
+        -- Приоритет для углов 90 и 270 градусов
+        local PRIORITY_THRESHOLD = 20
+        if closestAngle == 135 then
+            local diffTo90 = math.abs(angle - 90)
+            if diffTo90 < minDiff + PRIORITY_THRESHOLD then
+                closestAngle = 90
+            end
+        elseif closestAngle == 225 then
+            local diffTo270 = math.abs(angle - 270)
+            if diffTo270 < minDiff + PRIORITY_THRESHOLD then
+                closestAngle = 270
+            end
+        end
+
+        -- Вычисляем направление в мировых координатах
+        local angleRad = math.rad(closestAngle)
+        local moveDirectionWorld = Vector3.new(
+            math.cos(angleRad),
+            0,
+            math.sin(angleRad)
+        ).Unit
+
+        if distance > activeConstants.MIN_MOVE_DISTANCE then
+            isMoving = true
+            humanoid:Move(moveDirectionWorld * activeConstants.MOVE_SPEED_MULTIPLIER, false)
+        else
+            SmoothStop()
+        end
+    end
+end
+
+-- Функция для определения, находится ли мяч за спиной
+local function IsBallBehindPlayer(ballPosition)
+    local playerForward = rootPart.CFrame.LookVector
+    local toBall = (ballPosition - rootPart.Position).Unit
+    local dotProduct = playerForward:Dot(toBall)
+    return dotProduct < 0
+end
+
+-- Основной цикл
+RunService:BindToRenderStep("VisualizeLandingPosition", Enum.RenderPriority.Camera.Value, function()
+    if not activeConstants or not character or not rootPart then
+        return
+    end
+
+    Marker.Transparency = 1
+    for _, ballModel in ipairs(workspace:GetChildren()) do
+        if ballModel:IsA("Model") and ballModel.Name == "Ball" then
+            local ball = ballModel:FindFirstChild("BallPart")
+            if ball then
+                local velocityValue = ballModel:FindFirstChild("Velocity")
+                if velocityValue and velocityValue:IsA("Vector3Value") then
+                    local initialVelocity = velocityValue.Value
+                    local speed = initialVelocity.Magnitude
+
+                    local ballDistance = (ball.Position - rootPart.Position).Magnitude
+                    if ballDistance > activeConstants.MAX_BALL_DISTANCE then
+                        continue
+                    end
+
+                    if speed >= activeConstants.SPEED_THRESHOLD then
+                        local landingPosition = PredictLandingPosition(initialVelocity, ball.Position)
+                        Marker.CFrame = CFrame.new(landingPosition)
+
+                        local distanceToMarker = (landingPosition - rootPart.Position).Magnitude
+                        local isBehind = IsBallBehindPlayer(landingPosition)
+
+                        if distanceToMarker <= activeConstants.MOVE_RADIUS then
+                            MoveToPosition(landingPosition)
+                        else
+                            SmoothStop()
+                        end
+
+                        if (isBehind and distanceToMarker <= activeConstants.CLICK_RADIUS_BEHIND) or (not isBehind and distanceToMarker <= activeConstants.CLICK_RADIUS) then
+                            ClickMouse()
+                        elseif distanceToMarker <= activeConstants.DIVE_RADIUS then
+                            task.wait(activeConstants.DIVE_DELAY)
+                            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Three, false, game)
+                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Three, false, game)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- Обработчики клавиш
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed then
+        if input.KeyCode == Enum.KeyCode.LeftControl then
+            activeConstants = LEFT_CONTROL_CONSTANTS
+        elseif input.KeyCode == Enum.KeyCode.RightControl then
+            activeConstants = RIGHT_CONTROL_CONSTANTS
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+        activeConstants = nil
+        SmoothStop()
+    end
+end)
